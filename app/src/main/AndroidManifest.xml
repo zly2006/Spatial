@@ -5,6 +5,7 @@
     <uses-feature android:name="android.hardware.camera"/>
 
     <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-permission android:name="android.permission.BODY_SENSORS"/>
 
     <application
             android:allowBackup="true"
@@ -16,6 +17,11 @@
             android:supportsRtl="true"
             android:theme="@style/Theme.Spatial"
             tools:targetApi="31">
+        <activity
+                android:name=".GyroscopeActivity"
+                android:exported="false"
+                android:label="陀螺仪数据"
+                android:theme="@style/Theme.Spatial"/>
         <activity
                 android:name=".AcgCharacterActivity"
                 android:exported="false"

@@ -15,3 +15,4 @@ compiler.xml
 gradle.xml
 misc.xml
 *.iml
+runConfigurations.xml
