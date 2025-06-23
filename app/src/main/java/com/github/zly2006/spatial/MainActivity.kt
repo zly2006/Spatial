@@ -12,9 +12,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.github.zly2006.spatial.ui.theme.SpatialTheme
 
@@ -25,7 +23,6 @@ class MainActivity : ComponentActivity() {
         setContent {
             SpatialTheme {
                 Scaffold { innerPadding ->
-                    CameraScreen()
                     Row(Modifier.padding(innerPadding)) {
                         Button(onClick = {
                             startActivity(Intent(this@MainActivity, AcgCharacterActivity::class.java))
@@ -44,21 +41,5 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-    }
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!",
-        modifier = modifier
-    )
-}
-
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-    SpatialTheme {
-        Greeting("Android")
     }
 }
