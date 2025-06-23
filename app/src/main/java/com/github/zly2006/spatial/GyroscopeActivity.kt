@@ -26,7 +26,6 @@ import com.github.zly2006.spatial.ui.theme.SpatialTheme
 import kotlin.math.abs
 import kotlin.math.acos
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
 
 class GyroscopeActivity : ComponentActivity(), SensorEventListener {
     private lateinit var sensorManager: SensorManager
@@ -288,71 +287,9 @@ fun GyroscopeDataScreen(
     }
 }
 
-fun FloatArray.crossProduct(other: FloatArray): FloatArray {
-    require(this.size == 3 && other.size == 3) { "Both arrays must have exactly 3 elements." }
-    return floatArrayOf(
-        this[1] * other[2] - this[2] * other[1],
-        this[2] * other[0] - this[0] * other[2],
-        this[0] * other[1] - this[1] * other[0]
-    )
-}
-
 fun FloatArray.dotProduct(other: FloatArray): Float {
     require(this.size == other.size) { "Both arrays must have the same size." }
     return this.indices.map { this[it] * other[it] }.sum()
-}
-
-fun FloatArray.normalized3(): FloatArray {
-    val norm = sqrt(this[0] * this[0] + this[1] * this[1] + this[2] * this[2])
-    return if (norm > 0) {
-        floatArrayOf(this[0] / norm, this[1] / norm, this[2] / norm)
-    } else {
-        floatArrayOf(0f, 0f, 0f)
-    }
-}
-
-fun FloatArray.inverse3x3(): FloatArray {
-    require(this.size == 9) { "Array must have exactly 9 elements." }
-    val det = this[0] * (this[4] * this[8] - this[5] * this[7]) -
-              this[1] * (this[3] * this[8] - this[5] * this[6]) +
-              this[2] * (this[3] * this[7] - this[4] * this[6])
-    require(det != 0f) { "Matrix is singular and cannot be inverted." }
-
-    return floatArrayOf(
-        (this[4] * this[8] - this[5] * this[7]) / det,
-        (this[2] * this[7] - this[1] * this[8]) / det,
-        (this[1] * this[5] - this[2] * this[4]) / det,
-        (this[5] * this[6] - this[3] * this[8]) / det,
-        (this[0] * this[8] - this[2] * this[6]) / det,
-        (this[2] * this[3] - this[0] * this[5]) / det,
-        (this[3] * this[7] - this[4] * this[6]) / det,
-        (this[1] * this[6] - this[0] * this[7]) / det,
-        (this[0] * this[4] - this[1] * this[3]) / det
-    )
-}
-
-fun FloatArray.matrixMultiply(other: FloatArray): FloatArray {
-    require(this.size == 9 && other.size == 3) { "First array must have 9 elements and second array must have 3 elements." }
-    return floatArrayOf(
-        this[0] * other[0] + this[1] * other[1] + this[2] * other[2],
-        this[3] * other[0] + this[4] * other[1] + this[5] * other[2],
-        this[6] * other[0] + this[7] * other[1] + this[8] * other[2]
-    )
-}
-
-fun FloatArray.matrixMulMatrix(other: FloatArray): FloatArray {
-    require(this.size == 9 && other.size == 9) { "Both arrays must have exactly 9 elements." }
-    return floatArrayOf(
-        this[0] * other[0] + this[1] * other[3] + this[2] * other[6],
-        this[0] * other[1] + this[1] * other[4] + this[2] * other[7],
-        this[0] * other[2] + this[1] * other[5] + this[2] * other[8],
-        this[3] * other[0] + this[4] * other[3] + this[5] * other[6],
-        this[3] * other[1] + this[4] * other[4] + this[5] * other[7],
-        this[3] * other[2] + this[4] * other[5] + this[5] * other[8],
-        this[6] * other[0] + this[7] * other[3] + this[8] * other[6],
-        this[6] * other[1] + this[7] * other[4] + this[8] * other[7],
-        this[6] * other[2] + this[7] * other[5] + this[8] * other[8]
-    )
 }
 
 @Composable

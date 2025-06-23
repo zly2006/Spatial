@@ -49,7 +49,15 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.atan
 
-class AcgCharacterActivity : ComponentActivity() {
+class AcgCharacterActivity : ComponentActivity(), SensorEventListener {
+    private lateinit var sensorManager: SensorManager
+    private var rotationVectorSensor: Sensor? = null
+    private var rotationVectorData = FloatArray(6)
+    private var orientationAngles = FloatArray(3)
+    private var screenRight = FloatArray(3)
+    private var screenUp = FloatArray(3)
+    private var hasReference = false
+
     @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,8 +75,12 @@ class AcgCharacterActivity : ComponentActivity() {
         }
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         val executor = Executors.newSingleThreadExecutor()
-        val sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        val sensor: Sensor? = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        // 注册陀螺仪传感器监听
+        rotationVectorSensor?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        }
         setContent {
             val permissionState = rememberPermissionState(
                 permission = Manifest.permission.CAMERA
@@ -92,24 +104,6 @@ class AcgCharacterActivity : ComponentActivity() {
                     }
                 }
             }
-            val sensorListener = remember {
-                object : SensorEventListener {
-                    override fun onSensorChanged(event: SensorEvent) {
-                        if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
-                            // 处理传感器数据
-                            val rotationMatrix = FloatArray(9)
-                            event.values
-                            // 这里可以使用 rotationMatrix 来进行进一步处理
-                            Log.d("Sensor", "Rotation Matrix: ${rotationMatrix.joinToString()}")
-                        }
-                    }
-
-                    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-                    }
-                }
-            }
-            sensorManager.registerListener(sensorListener, sensor, 5000)
-
             val lifecycleOwner = LocalLifecycleOwner.current
             DisposableEffect(Unit) {
                 val cameraProvider = cameraProviderFuture.get(5, TimeUnit.SECONDS)
@@ -162,22 +156,50 @@ class AcgCharacterActivity : ComponentActivity() {
 
             SpatialTheme {
                 val sliderState = remember { SliderState() }
+                var refRight by remember { mutableStateOf(FloatArray(3)) }
+                var refUp by remember { mutableStateOf(FloatArray(3)) }
+                var hasReference by remember { mutableStateOf(false) }
+                var orientationAnglesState by remember { mutableStateOf(FloatArray(3)) }
+                var rotationVectorDataState by remember { mutableStateOf(FloatArray(6)) }
+                // 监听陀螺仪数据
+                DisposableEffect(Unit) {
+                    val listener = object : SensorEventListener {
+                        override fun onSensorChanged(event: SensorEvent) {
+                            if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
+                                val values = event.values
+                                val rotationMatrix = FloatArray(9)
+                                SensorManager.getRotationMatrixFromVector(rotationMatrix, values)
+                                val orientation = FloatArray(3)
+                                SensorManager.getOrientation(rotationMatrix, orientation)
+                                orientationAnglesState = orientation
+                                rotationVectorDataState = values.plus(0f)
+                            }
+                        }
+                        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+                    }
+                    sensorManager.registerListener(listener, rotationVectorSensor, SensorManager.SENSOR_DELAY_GAME)
+                    onDispose {
+                        sensorManager.unregisterListener(listener)
+                    }
+                }
                 Greeting2(
                     offset = {
-                        if (faceDetectorResult?.detections()?.size == 1) {
-                            val detection = faceDetectorResult!!.detections()[0]
-                            val box = detection.boundingBox()
-                            val xOffset = box.centerX() / imageWidth - 0.5
-                            val yOffset = box.centerY() / imageHeight - 0.5
+                        if (hasReference) {
+                            val rotationMatrix = FloatArray(9)
+                            SensorManager.getRotationMatrixFromVector(rotationMatrix, rotationVectorDataState)
+                            val currentScreenNormal = floatArrayOf(
+                                rotationMatrix[2], rotationMatrix[5], rotationMatrix[8]
+                            )
+                            val right = currentScreenNormal.dotProduct(refRight)
+                            val up = currentScreenNormal.dotProduct(refUp)
                             val maxScale = 100.dp.toPx()
                             val sensitivity = sliderState.value.coerceIn(0f, 1f)
 
                             IntOffset(
-                                (atan(xOffset) * sensitivity * maxScale).toInt(),
-                                (atan(yOffset) * sensitivity * maxScale).toInt()
+                                (right * sensitivity * maxScale).toInt(),
+                                (up * sensitivity * maxScale).toInt()
                             )
-                        }
-                        else {
+                        } else {
                             IntOffset(0, 0)
                         }
                     },
@@ -195,11 +217,19 @@ class AcgCharacterActivity : ComponentActivity() {
                             }
                             Box(modifier = Modifier.background(Color.LightGray).wrapContentSize()) {
                                 AndroidView(
-                                    {
-                                        previewView
-                                    }, modifier = Modifier.height(80.dp)
+                                    { previewView }, modifier = Modifier.height(80.dp)
                                 )
                             }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Button(onClick = {
+                            val rotationMatrix = FloatArray(9)
+                            SensorManager.getRotationMatrixFromVector(rotationMatrix, rotationVectorDataState)
+                            refRight = floatArrayOf(rotationMatrix[0], rotationMatrix[3], rotationMatrix[6])
+                            refUp = floatArrayOf(rotationMatrix[1], rotationMatrix[4], rotationMatrix[7])
+                            hasReference = true
+                        }) {
+                            Text("重置陀螺仪")
                         }
                     },
                     sliderState = sliderState
@@ -207,6 +237,16 @@ class AcgCharacterActivity : ComponentActivity() {
             }
         }
     }
+    override fun onSensorChanged(event: SensorEvent) {
+        if (event.sensor.type == Sensor.TYPE_ROTATION_VECTOR) {
+            val values = event.values
+            val rotationMatrix = FloatArray(9)
+            SensorManager.getRotationMatrixFromVector(rotationMatrix, values)
+            SensorManager.getOrientation(rotationMatrix, orientationAngles)
+            rotationVectorData = values.plus(0f)
+        }
+    }
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -288,4 +328,3 @@ fun GreetingPreview2() {
         )
     }
 }
-
