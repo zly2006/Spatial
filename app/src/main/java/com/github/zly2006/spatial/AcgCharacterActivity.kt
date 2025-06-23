@@ -238,8 +238,8 @@ fun Greeting2(modifier: Modifier = Modifier, sliderState: SliderState, footer: @
             painter = BitmapPainter(
                 bgBitmap,
                 srcOffset = IntOffset(
-                    (bgBitmap.width - size.width) / 2 + offset.x,
-                    (0.05 * bgBitmap.height).toInt() + offset.y,
+                    (bgBitmap.width - size.width) / 2 - offset.x,
+                    (0.05 * bgBitmap.height).toInt() - offset.y,
                 ),
                 srcSize = size
             ),
