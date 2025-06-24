@@ -1,7 +1,6 @@
 package com.github.zly2006.spatial
 
 import android.Manifest
-import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -36,22 +35,102 @@ import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.*
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.github.zly2006.spatial.ui.theme.SpatialTheme
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
+import com.google.mediapipe.tasks.components.containers.Detection
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.facedetector.FaceDetectorResult
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.math.exp
 import kotlin.math.sqrt
 
 class FaceGyroscopeBlender() {
-    private var refreshInterval = 100L // 默认刷新间隔为100毫秒
-    private val horizontalFaceMove = mutableListOf<Float>()
+    private var lastRefreshTime = System.currentTimeMillis()
+    var faceInterval = 100L // 刷新间隔，单位毫秒
+    // face movement / gyroscope movement
+    private val horizontalFaceMoveFraction = mutableListOf<Float>()
+    private val verticalFaceMoveFraction = mutableListOf<Float>()
+    private val historyGyroData = mutableListOf<FloatArray>()
+    private val historyFaceData = mutableListOf<Detection>()
+    private val maxHistorySize = 30 // 最大历史记录数
+
+    fun popHistory() {
+        if (horizontalFaceMoveFraction.size > maxHistorySize) {
+            horizontalFaceMoveFraction.removeAt(0)
+        }
+        if (verticalFaceMoveFraction.size > maxHistorySize) {
+            verticalFaceMoveFraction.removeAt(0)
+        }
+        if (historyGyroData.size > maxHistorySize) {
+            historyGyroData.removeAt(0)
+        }
+        if (historyFaceData.size > maxHistorySize) {
+            historyFaceData.removeAt(0)
+        }
+    }
+
+    /**
+     * face movement / gyroscope movement
+     */
+    val horizontalFaceMoveFractionAverage: Float
+        get() {
+            if (horizontalFaceMoveFraction.isEmpty()) return 1f
+            return horizontalFaceMoveFraction.average().toFloat()
+        }
+
+    /**
+     * face movement / gyroscope movement
+     */
+    val verticalFaceMoveFractionAverage: Float
+        get() {
+            if (verticalFaceMoveFraction.isEmpty()) return 1f
+            return verticalFaceMoveFraction.average().toFloat()
+        }
+
+    fun update(
+        face: Detection,
+        gyroUp: Float,
+        gyroRight: Float,
+    ) {
+        faceInterval = (System.currentTimeMillis() - lastRefreshTime) / 4 + faceInterval * 3 / 4 // 平滑
+        lastRefreshTime = System.currentTimeMillis()
+        if (historyFaceData.isNotEmpty() && historyGyroData.isNotEmpty()) {
+            val horizontalFaceMove = face.boundingBox().centerX() - historyFaceData.last().boundingBox().centerX()
+            val verticalFaceMove = face.boundingBox().centerY() - historyFaceData.last().boundingBox().centerY()
+            val horizontalGyroMove = gyroRight - historyGyroData.last()[0]
+            val verticalGyroMove = gyroUp - historyGyroData.last()[1]
+            if (horizontalGyroMove != 0f) {
+                val f = horizontalFaceMove / horizontalGyroMove
+                if (horizontalFaceMoveFraction.isEmpty() || f / horizontalFaceMoveFractionAverage in 0.75f..1.25f) {
+                    horizontalFaceMoveFraction.add(f)
+                } else {
+                    Log.w("FaceGyroscopeBlender", "Horizontal face move unexpected value: $f, expected around $horizontalFaceMoveFractionAverage")
+                    horizontalFaceMoveFraction.removeAt(horizontalFaceMoveFraction.lastIndex)
+                }
+            }
+            if (verticalGyroMove != 0f) {
+                val f = verticalFaceMove / verticalGyroMove
+                if (verticalFaceMoveFraction.isEmpty() || f / verticalFaceMoveFractionAverage in 0.75f..1.25f) {
+                    verticalFaceMoveFraction.add(f)
+                } else {
+                    Log.w("FaceGyroscopeBlender", "Vertical face move unexpected value: $f, expected around $verticalFaceMoveFractionAverage")
+                    verticalFaceMoveFraction.removeAt(verticalFaceMoveFraction.lastIndex)
+                }
+            }
+        }
+        historyFaceData.add(face)
+        historyGyroData.add(floatArrayOf(gyroUp, gyroRight))
+        popHistory()
+    }
 }
 
 class AcgCharacterActivity : ComponentActivity() {
@@ -63,8 +142,6 @@ class AcgCharacterActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val previewView = PreviewView(this)
-        previewView.scaleX = 0.15f
-        previewView.scaleY = 0.15f
         previewView.setOnClickListener {
             if (it.alpha == 1f) {
                 it.alpha = 0f
@@ -77,6 +154,8 @@ class AcgCharacterActivity : ComponentActivity() {
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         var lastFaceDetectTime = System.currentTimeMillis()
+        val blender = FaceGyroscopeBlender()
+        val faceDetectEnabled = intent.getBooleanExtra("faceDetectEnabled", true)
         setContent {
             val permissionState = rememberPermissionState(
                 permission = Manifest.permission.CAMERA
@@ -102,42 +181,44 @@ class AcgCharacterActivity : ComponentActivity() {
                 }
             }
             val lifecycleOwner = LocalLifecycleOwner.current
-            DisposableEffect(Unit) {
-                val cameraProvider = cameraProviderFuture.get(5, TimeUnit.SECONDS)
-                val preview = androidx.camera.core.Preview.Builder()
-                    .setTargetAspectRatio(AspectRatio.RATIO_16_9)
-                    .build().also {
-                        it.setSurfaceProvider(previewView.surfaceProvider)
-                    }
-                val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
-                val imageAnalysis = ImageAnalysis.Builder()
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
-                    .build()
-                val faceDetectorHelper = FaceDetectorHelper(
-                    context = this@AcgCharacterActivity,
-                    runningMode = RunningMode.LIVE_STREAM,
-                    faceDetectorListener = detectorListener
-                )
-                imageAnalysis.setAnalyzer(executor) { imageProxy ->
-                    faceDetectorHelper.detectLivestreamFrame(imageProxy)
-                }
-                try {
-                    faceDetectorHelper.setupFaceDetector()
-                    cameraProvider.unbindAll()
-                    cameraProvider.bindToLifecycle(
-                        lifecycleOwner,
-                        cameraSelector,
-                        preview,
-                        imageAnalysis
+            if (faceDetectEnabled) {
+                DisposableEffect(Unit) {
+                    val cameraProvider = cameraProviderFuture.get(5, TimeUnit.SECONDS)
+                    val preview = androidx.camera.core.Preview.Builder()
+                        .setTargetAspectRatio(AspectRatio.RATIO_16_9)
+                        .build().also {
+                            it.setSurfaceProvider(previewView.surfaceProvider)
+                        }
+                    val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
+                    val imageAnalysis = ImageAnalysis.Builder()
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+                        .build()
+                    val faceDetectorHelper = FaceDetectorHelper(
+                        context = this@AcgCharacterActivity,
+                        runningMode = RunningMode.LIVE_STREAM,
+                        faceDetectorListener = detectorListener
                     )
-                } catch (exc: Exception) {
-                    Log.e("CameraScreen", "Use case binding failed", exc)
-                }
-                onDispose {
-                    cameraProvider.unbindAll()
-                    executor.shutdown()
-                    faceDetectorHelper.clearFaceDetector()
+                    imageAnalysis.setAnalyzer(executor) { imageProxy ->
+                        faceDetectorHelper.detectLivestreamFrame(imageProxy)
+                    }
+                    try {
+                        faceDetectorHelper.setupFaceDetector()
+                        cameraProvider.unbindAll()
+                        cameraProvider.bindToLifecycle(
+                            lifecycleOwner,
+                            cameraSelector,
+                            preview,
+                            imageAnalysis
+                        )
+                    } catch (exc: Exception) {
+                        Log.e("CameraScreen", "Use case binding failed", exc)
+                    }
+                    onDispose {
+                        cameraProvider.unbindAll()
+                        executor.shutdown()
+                        faceDetectorHelper.clearFaceDetector()
+                    }
                 }
             }
 
@@ -155,7 +236,7 @@ class AcgCharacterActivity : ComponentActivity() {
                 val sliderState = remember { SliderState(0.7f) }
                 var refRight by remember { mutableStateOf(FloatArray(3)) }
                 var refUp by remember { mutableStateOf(FloatArray(3)) }
-                var hasReference by remember { mutableStateOf(false) }
+                var hasReference by remember { mutableStateOf(!faceDetectEnabled) }
                 var orientationAnglesState by remember { mutableStateOf(FloatArray(3)) }
                 var rotationVectorDataState by remember { mutableStateOf(FloatArray(6)) }
                 // 监听陀螺仪数据
@@ -170,6 +251,19 @@ class AcgCharacterActivity : ComponentActivity() {
                                 SensorManager.getOrientation(rotationMatrix, orientation)
                                 orientationAnglesState = orientation
                                 rotationVectorDataState = values.plus(0f)
+                                if (refRight.sum() == 0f && refUp.sum() == 0f) {
+                                    // 如果还没有参考点，则设置当前屏幕法线为参考点
+                                    refRight = floatArrayOf(
+                                        rotationMatrix[0],
+                                        rotationMatrix[3],
+                                        rotationMatrix[6]
+                                    ).normalized3()
+                                    refUp = floatArrayOf(
+                                        rotationMatrix[1],
+                                        rotationMatrix[4],
+                                        rotationMatrix[7]
+                                    ).normalized3()
+                                }
                             }
                         }
                         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
@@ -180,48 +274,78 @@ class AcgCharacterActivity : ComponentActivity() {
                     }
                 }
                 // 人脸检测用于自动重置陀螺仪基准点和调节敏感度
-                LaunchedEffect(faceDetectorResult, imageWidth, imageHeight) {
-                    if (faceDetectorResult != null && faceDetectorResult!!.detections()
-                            .isNotEmpty() && imageWidth > 0 && imageHeight > 0
-                    ) {
-                        // 检测到人脸时自动重置陀螺仪基准点
-                        val rotationMatrix = FloatArray(9)
-                        SensorManager.getRotationMatrixFromVector(rotationMatrix, rotationVectorDataState)
+                if (faceDetectEnabled) {
+                    LaunchedEffect(faceDetectorResult, imageWidth, imageHeight) {
+                        if (faceDetectorResult != null && faceDetectorResult!!.detections()
+                                .isNotEmpty() && imageWidth > 0 && imageHeight > 0
+                        ) {
+                            // 检测到人脸时自动重置陀螺仪基准点
+                            val rotationMatrix = FloatArray(9)
+                            SensorManager.getRotationMatrixFromVector(rotationMatrix, rotationVectorDataState)
+                            val currentScreenNormal = floatArrayOf(
+                                rotationMatrix[2], rotationMatrix[5], rotationMatrix[8]
+                            )
+                            val up = currentScreenNormal.dotProduct(refUp)
+                            val right = currentScreenNormal.dotProduct(refRight)
 
-                        val faceDetectInterval = System.currentTimeMillis() - lastFaceDetectTime
-                        if (hasReference) {
-                            // 如果已经有参考点，则使用插值平滑过渡
-                            refRight = floatArrayOf(
-                                lerp(refRight[0], rotationMatrix[0], faceDetectInterval / 500f),
-                                lerp(refRight[1], rotationMatrix[3], faceDetectInterval / 500f),
-                                lerp(refRight[2], rotationMatrix[6], faceDetectInterval / 500f)
-                            ).normalized3()
-                            refUp = floatArrayOf(
-                                lerp(refUp[0], rotationMatrix[1], faceDetectInterval / 500f),
-                                lerp(refUp[1], rotationMatrix[4], faceDetectInterval / 500f),
-                                lerp(refUp[2], rotationMatrix[7], faceDetectInterval / 500f)
-                            ).normalized3()
-                        }
-                        else {
-                            refRight = floatArrayOf(
-                                rotationMatrix[0],
-                                rotationMatrix[3],
-                                rotationMatrix[6]
-                            ).normalized3()
-                            refUp = floatArrayOf(
-                                rotationMatrix[1],
-                                rotationMatrix[4],
-                                rotationMatrix[7]
-                            ).normalized3()
-                        }
+                            blender.update(
+                                faceDetectorResult!!.detections().first(),
+                                up,
+                                right
+                            )
 
-                        hasReference = true
-                        // 根据人脸框大小动态调节敏感度（示例：人脸越大，敏感度越低，越小越高）
-                        val face = faceDetectorResult!!.detections().first()
-                        val box = face.boundingBox()
-                        val faceSize =
-                            sqrt(((box.right - box.left) * (box.bottom - box.top)) / (imageWidth * imageHeight))
-                        sliderState.value = lerp(sliderState.value, faceSize * 2f, faceDetectInterval / 500f).coerceIn(0f, 1f)
+                            // 根据人脸框大小动态调节敏感度（示例：人脸越大，敏感度越低，越小越高）
+                            val face = faceDetectorResult!!.detections().first()
+                            val box = face.boundingBox()
+
+
+                            if (hasReference) {
+                                val expectedGyroRight = (imageWidth / 2 - box.centerX()) / blender.horizontalFaceMoveFractionAverage
+                                val expectedGyroUp = (imageHeight / 2 - box.centerY()) / blender.verticalFaceMoveFractionAverage
+
+                                Log.d("AcgCharacterActivity", "Expected gyro right: $expectedGyroRight, up: $expectedGyroUp")
+
+                                val (expectedRight, expectedUp, _) = calculateExpectedVectors(
+                                    currentScreenNormal,
+                                    expectedGyroRight,
+                                    expectedGyroUp
+                                )
+
+                                blender.faceInterval = 50
+                                // 如果已经有参考点，则使用插值平滑过渡
+                                refRight = floatArrayOf(
+                                    lerp(refRight[0], expectedRight[0], blender.faceInterval / 500f),
+                                    lerp(refRight[1], expectedRight[1], blender.faceInterval / 500f),
+                                    lerp(refRight[2], expectedRight[2], blender.faceInterval / 500f)
+                                ).normalized3()
+                                refUp = floatArrayOf(
+                                    lerp(refUp[0], expectedUp[0], blender.faceInterval / 500f),
+                                    lerp(refUp[1], expectedUp[1], blender.faceInterval / 500f),
+                                    lerp(refUp[2], expectedUp[2], blender.faceInterval / 500f)
+                                ).normalized3()
+                            }
+                            else {
+                                refRight = floatArrayOf(
+                                    rotationMatrix[0],
+                                    rotationMatrix[3],
+                                    rotationMatrix[6]
+                                ).normalized3()
+                                refUp = floatArrayOf(
+                                    rotationMatrix[1],
+                                    rotationMatrix[4],
+                                    rotationMatrix[7]
+                                ).normalized3()
+                            }
+                            hasReference = true
+
+                            val faceSize =
+                                sqrt(((box.right - box.left) * (box.bottom - box.top)) / (imageWidth * imageHeight))
+                            sliderState.value = lerp(
+                                sliderState.value,
+                                0.7f * exp(3 * faceSize - 3) + .2f,
+                                blender.faceInterval / 1500f
+                            ).coerceIn(0f, 1f)
+                        }
                     }
                 }
                 val density = LocalDensity.current
@@ -392,3 +516,4 @@ fun GreetingPreview2() {
         )
     }
 }
+
